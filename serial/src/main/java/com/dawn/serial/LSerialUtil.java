@@ -255,10 +255,9 @@ public class LSerialUtil {
                     startHexReceiver();
                     break;
                 case TYPE_ASCII:
+                    mInputStream = mSerialPort.getInputStream();
                     mPrintWriter = new PrintWriter(new BufferedWriter(
                             new OutputStreamWriter(mSerialPort.getOutputStream(), StandardCharsets.UTF_8)), true);
-                    mBufferedReader = new BufferedReader(
-                            new InputStreamReader(mSerialPort.getInputStream(), StandardCharsets.UTF_8));
                     startAsciiReceiver();
                     break;
             }
@@ -664,18 +663,35 @@ public class LSerialUtil {
 
     /**
      * 启动 ASCII 模式接收线程
+     * <p>
+     * 使用与 HEX 模式相同的 {@link InputStream#available()} 轮询方式，
+     * 避免 {@link java.io.BufferedReader#readLine()} 在非阻塞串口 FD 上
+     * 因 EAGAIN 返回 null 而错误退出接收循环。
+     * </p>
      */
     private void startAsciiReceiver() {
         mReceiverThread = new Thread(() -> {
-            String line;
+            byte[] buffer = new byte[HEX_READ_BUFFER_SIZE];
             while (!Thread.currentThread().isInterrupted() && mIsConnected) {
                 try {
-                    if ((line = mBufferedReader.readLine()) != null) {
-                        appendAsciiCache(line);
-                    } else {
+                    int available = mInputStream.available();
+                    if (available <= 0) {
+                        // 非阻塞模式下无数据时，短暂休眠避免 CPU 空转
+                        Thread.sleep(5);
+                        continue;
+                    }
+                    int size = mInputStream.read(buffer);
+                    if (size == -1) {
                         // 流已结束
+                        Log.w(TAG, "ASCII输入流已结束: " + mPortPath);
                         break;
                     }
+                    if (size > 0) {
+                        appendAsciiCache(new String(buffer, 0, size, StandardCharsets.UTF_8));
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 } catch (IOException e) {
                     if (!Thread.currentThread().isInterrupted() && mIsConnected) {
                         Log.e(TAG, "ASCII接收错误: " + e.getMessage());
